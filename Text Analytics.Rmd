@@ -16,7 +16,7 @@ library(stringr)
 library(lubridate)
 
 # specify root directory where transcript files are stored
-dirName <- "~/Desktop/Caterpillar/"
+dirName <- "~/Desktop/[COMPANY]/"
 # processing read list of files from directory
 fileList <- list.files(dirName)
 
@@ -171,7 +171,7 @@ transcript_words <- transcript_df %>%
   unnest_tokens(word, text)
 
 #Set custom stop wods to be removed from analysis 
-mystopwords <- data.frame( word = c("millions","billions","Peoria", "Caterpillar", "mossville", as.character(0:9)) ) 
+mystopwords <- data.frame( word = c("millions","billions","Peoria", "[COMPANY]", "mossville", as.character(0:9)) ) 
 
 # lemmatize, remove stopwords and custom stop words, count, then bind tf_idf to transcript_words
 transcript_words <- transcript_words %>%
@@ -225,7 +225,7 @@ dominant_speaker <- speaker_char %>%
 
 #Detmermine the percent of the document for which the focal company is speaking
 focal_org_behavior <- speaker_char %>% 
-  filter(str_detect(speaker_company,"Caterpillar" )) %>% 
+  filter(str_detect(speaker_company,"[COMPANY]" )) %>% 
   group_by(fileName, transDate) %>% 
   summarise(focal_org_percent = sum(percent_talk))  
 
