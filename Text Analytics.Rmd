@@ -1,0 +1,688 @@
+---
+title: "Transcript File Preprocessing"
+author: "Zach Papin"
+date: "April 18, 2018"
+output: html_document
+---
+
+
+
+1. Read text files and perform basic text cleaning
+```{r, eval=FALSE}
+
+rm(list=ls())
+library(tm)
+library(stringr)
+library(lubridate)
+
+# specify root directory where transcript files are stored
+dirName <- "~/Desktop/Caterpillar/"
+# processing read list of files from directory
+fileList <- list.files(dirName)
+
+# create empty data frame to store file name, speaker, and text
+transcript_df <- data.frame(fileName = character(), speaker = character(), text = character(), pos = integer())
+
+# cycle through all documents in directory
+for (i in 1:length(fileList)) {
+  
+  # concatenate directory and filename; read contents of text file
+  path <- paste0( dirName , fileList[i] ) 
+  fullText <- readLines(path)
+  
+  fullText <- iconv( fullText, from = "latin1", to = "ASCII", sub = "" )
+  fullText <- stripWhitespace(fullText) # remove extra white spaces
+  fullText <- trimws(fullText, which = "both") # cleaning white spaces at the beginning and end
+
+  fullText <- fullText[-1] # remove first row (file header with no meaning)
+  
+  # remove various periods commonly used for abbreviations
+  fullText <- gsub("[Ii]nc\\.", "Inc", fullText, fixed=FALSE) 
+  fullText <- gsub("[Ll]td\\.", "Ltd", fullText, fixed = FALSE) 
+  fullText <- gsub("[Cc]o\\.", "Co", fullText, fixed = FALSE) 
+  fullText <- gsub("[Cc]orp\\.", "Corp", fullText, fixed = FALSE)
+  fullText <- gsub("[Cc]omm\\.", "Comm", fullText, fixed = FALSE)
+  fullText <- gsub("[Oo]ps\\.", "Ops", fullText, fixed = FALSE)
+  fullText <- gsub("[Aa]nalyst\\.", "Analyst", fullText, fixed = FALSE)
+  fullText <- gsub("[Dd]ev\\.", "Dev", fullText, fixed = FALSE)
+  fullText <- gsub("[Ss]ec\\.", "Sec", fullText, fixed = FALSE)
+  fullText <- gsub("V\\.P\\.", "VP", fullText, fixed = FALSE)
+  fullText <- gsub("[Mm]gr\\.", "Mgr", fullText, fixed = FALSE)
+  fullText <- gsub("Platforms Group\\.", "Platforms Group", fullText, fixed = FALSE)
+  fullText <- gsub("\\.\\ \\-", "\\ \\-", fullText, fixed = FALSE)
+  fullText <- gsub("\\.\\,", "\\,", fullText, fixed = FALSE)
+  fullText <- gsub("I\\.R\\.", "IR", fullText, fixed = FALSE)
+  fullText <- gsub("J\\.P\\.", "JP", fullText, fixed = FALSE)
+  
+
+  trans_date <- mdy(str_sub(fullText, start=regexpr("\\(Thomson StreetEvents\\)", fullText)-13, end = regexpr("\\(Thomson StreetEvents\\)", fullText)-1))
+  
+  # determine which file format the transcript is in
+  # if speakers are separated by ----------- characters, use the following to parse text
+  if (grepl("-{5}", fullText, fixed=F)) {
+    # fill empty space between delimiters with "NULL" so no empty text is returned while parsing
+    fullText <- gsub("-{5,}\\s+-{5,}", "------ NULL ------", fullText)
+    script <- strsplit(fullText, '-{5}')[[1]] # split text into list at each occurrence of more than 5 hyphens
+
+    temp <- NULL
+    temp <- which( nchar(script) == 0 ) # marking the lines with 0 character length
+    if ( length(temp) >0 ) script <- script[ -temp ] # removing empty lines, line breaks
+  
+    script <- script[-1] # remove header from list
+    script <- gsub("--","",script, fixed=TRUE) # remove all double hyphens
+  
+    temp <- NULL
+    temp <- grep("^ $", script) # mark lines with one single space 
+    if ( length(temp) >0 ) script <- script[ -temp ] # removing lines containing single empty space
+    
+    # create data frame populated with file name, transcript date, and empty values for other cols
+    script_df <- data.frame(fileName = fileList[i], transDate = trans_date, speaker = rep(NA, length(script)/2), text = rep(NA, length(script)/2), pos = rep(NA, length(script)/2)) 
+    
+    # cycle through list and store into data frame
+    j <- 1
+    while (j <= length(script)) {
+    script_df$speaker[(j+1)/2] <- script[j]
+    script_df$text[(j+1)/2] <- script[j+1]
+    script_df$pos[(j+1)/2] <- (j+1)/2
+    j <- j+2
+    }
+  
+    #append the data frame from this iteration of loop to master dataframe containing all transcripts
+    transcript_df <- rbind(transcript_df, script_df) 
+  } else
+    # transcript not formatted with --------- delimiters
+    {
+    # check to verify if Q&A section to transcript - if not, skip to end of loop and try next file
+    if(grepl("QUESTIONS AND ANSWERS", fullText)){
+      # parse out all text coming after Q&A
+      fullText <- str_sub(fullText, start=str_locate(fullText, "QUESTIONS AND ANSWERS")[2]+2)
+      
+      #split text into list at each occurence of number inside brackets
+      script <- strsplit(fullText, '[[0-9]+]')[[1]]
+      script <- script[ -c(1:2) ] # remove the first 2 lines
+      script <- gsub("--", ".", script) # replace double hyphen with period
+      
+      #create empty dataframe for this file
+      script_df <- data.frame(fileName = fileList[i], transDate = trans_date, speaker = rep(NA, length(script)-1), text = rep(NA, length(script)-1), pos = rep(NA, length(script)-1))
+
+      for (j in 1: length(script)-1) {
+        # extract speaker and text information by looking for last period or question mark in text
+        script_df$speaker[j] <- str_sub(script[j], start=regexpr("[.?)] [^.?]*$", script[j])+1)
+        script_df$text[j] <- str_sub(script[j+1], start=1L, end=regexpr("[.?)] [^.?]*$", script[j+1]))
+        script_df$pos[j] <- j
+  
+      } #close for loop for this doc
+      
+      transcript_df <- rbind(transcript_df, script_df) # append current data frame to master data frame
+    
+    } #close if for Q&A
+  }# close if for file format check
+  
+} # close for loop iterating through all docs
+
+rm(script_df, fullText, i, j, path, script, temp, trans_date)
+
+#Remove all diits and punctuation from the transcript text
+transcript_df$text <- gsub("[[:digit:]]+"," ", transcript_df$text, fixed = FALSE)
+transcript_df$text <- gsub("[[:punct:]]"," ", transcript_df$text, fixed = FALSE)
+transcript_df$text <- trimws(transcript_df$text)
+
+#Remove number labels fom the speaker column
+transcript_df$speaker <- gsub("\\[[0-9]+\\]"," ", transcript_df$speaker, fixed = FALSE)
+
+#Parse speaker column into speaker name, speaker position, and speaker company 
+speakerSplit <- data.frame(str_split_fixed(transcript_df$speaker, pattern=', ', n=2))
+positionsplit <- data.frame(str_split_fixed(speakerSplit$X2, pattern='-', n=2))
+
+#Add speaker name, position, and company to the transcript dataframe
+transcript_df <- cbind.data.frame(transcript_df, speakerSplit[1])
+transcript_df <- cbind.data.frame(transcript_df, positionsplit)
+names(transcript_df)[6] <- "speaker_name"
+names(transcript_df)[7] <- "speaker_company"
+names(transcript_df)[8] <- "speaker_position"
+
+#Remove digits and punctuation and trim whitespace for relavent columns 
+transcript_df$speaker_name <- gsub("[[:digit:]]+"," ", transcript_df$speaker_name, fixed = FALSE)
+transcript_df$speaker_name <- gsub("[[:punct:]]"," ", transcript_df$speaker_name, fixed = FALSE)
+transcript_df$speaker_position <- gsub("[[:digit:]]+"," ", transcript_df$speaker_position, fixed = FALSE)
+transcript_df$speaker_position <- gsub("[[:punct:]]"," ", transcript_df$speaker_position, fixed = FALSE)
+transcript_df$speaker_company <- gsub("[[:digit:]]+"," ", transcript_df$speaker_company, fixed = FALSE)
+transcript_df$speaker_company <- gsub("[[:punct:]]"," ", transcript_df$speaker_company, fixed = FALSE)
+transcript_df$speaker_position <- trimws(transcript_df$speaker_position)
+transcript_df$speaker_company <- trimws(transcript_df$speaker_company)
+transcript_df$speaker_name <- trimws(transcript_df$speaker_name)
+```
+
+
+2. Frequency Analysis
+```{r frequency analysis}
+library(tidytext)
+library(tidyverse)
+library(dplyr)
+library(textstem)
+library(wordcloud)
+
+# perform a basic frequency analysis: 
+# tokenize by word, lemmatize words, remove stop words, remove custom stop words and calculate tf-idf
+# generate word cloud that displays the 50 words with the highest tf-idf scores
+
+# Tokenize by word and store into df called transcript_words
+transcript_words <- transcript_df %>%
+  unnest_tokens(word, text)
+
+#Set custom stop wods to be removed from analysis 
+mystopwords <- data.frame( word = c("millions","billions","Peoria", "Caterpillar", "mossville", as.character(0:9)) ) 
+
+# lemmatize, remove stopwords and custom stop words, count, then bind tf_idf to transcript_words
+transcript_words <- transcript_words %>%
+  mutate(word = lemmatize_words(transcript_words$word)) %>%
+  anti_join(stop_words) %>%
+  anti_join(mystopwords) %>%
+  count(fileName, word, sort = TRUE) %>%
+  bind_tf_idf(word, fileName, n) %>%
+  arrange(desc(tf_idf))
+ 
+# inspect
+head(transcript_words) 
+
+# plot
+transcript_words %>%
+  filter(n > 500) %>%
+  ggplot(aes(word, n)) + geom_col() + xlab(NULL) + coord_flip()
+
+# wordcloud
+wordcloud(transcript_words$word, transcript_words$tf_idf, max.words=70, random.order=F, scale = c(2,.1),colors=brewer.pal(5, "Dark2"))
+
+# create document-term matrix
+ dtm_cat <- transcript_words %>%
+   cast_dtm(fileName, word, n)
+ dtm_cat
+
+```
+3. Determine dominant speaker and focal company behavior for each document 
+```{r}
+#Determine the total number of characters present in each document
+total_char <- transcript_df %>% 
+  group_by(fileName, transDate) %>% 
+  summarise(tot_char = sum(nchar(text)))
+
+#Determine the total number of characters for each speaker in a document
+speaker_char <- transcript_df %>% 
+  group_by(fileName, transDate, speaker_name, speaker_position,speaker_company) %>% 
+  summarise(speaker_char = sum(nchar(text)))
+
+#Determine the percent of the document for which a given person speaks based on characters
+speaker_char <- speaker_char %>% 
+  left_join(total_char, by=c("fileName","transDate")) %>% 
+  mutate(percent_talk = (speaker_char/tot_char))
+
+#Determing the dominant speaker of the document
+dominant_speaker <- speaker_char %>% 
+  group_by(fileName, transDate) %>% 
+  summarise(percent_talk = max(percent_talk))
+  dominant_speaker <-dominant_speaker %>% 
+  left_join(speaker_char, by= c("fileName", "transDate","percent_talk")) 
+
+#Detmermine the percent of the document for which the focal company is speaking
+focal_org_behavior <- speaker_char %>% 
+  filter(str_detect(speaker_company,"Caterpillar" )) %>% 
+  group_by(fileName, transDate) %>% 
+  summarise(focal_org_percent = sum(percent_talk))  
+
+
+```
+
+4. Basic Topic Modeling
+```{r basic topic extraction, eval = FALSE}
+library(topicmodels)
+library(ggplot2)
+library(broom)
+
+set.seed(123)
+
+# perform LDA using 6 topics
+cat_lda <- LDA(dtm_cat, k = 6, method = "Gibbs", control = list(iter = 2000))
+
+# create data frame storing probabilities that each word belongs to a topic (beta)
+cat_topics <- tidy(cat_lda, matrix = "beta")
+
+
+# determine the top five words in each topic
+top_terms <- cat_topics %>%
+  group_by(topic) %>%
+  top_n(5, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+```
+
+5. Classifying documents into topics
+```{r Topic Classification}
+
+# create data frame showing probabilities that an article discusses a topic (gamma)
+articles_gamma <- tidy(cat_lda, matrix = "gamma")
+
+# If you want to replace numeric topic labels with strings that describe each topic, use the code on lines 144-152 below.  Otherwise, comment it out and all analyses will simply display topic numbers instead of labels 
+
+# define number of topics in model
+k <- 6
+
+# document labels/titles for each topic number
+labels <- c("Customer and Dealers", "engines", "market growth", "Outlook", "Constuction, oil, & Gas", "mining")
+# replace numeric topic labels with text labels specified above
+for (i in 1:k){
+  articles_gamma$topic <- gsub(i, labels[i], articles_gamma$topic,fixed=T)
+}
+
+# classify each article into a topic by selecting topic with highest gamma
+article_classification <- articles_gamma %>%
+  group_by(document) %>%
+  top_n(1, gamma)
+
+# display number of articles in each topic
+article_classification %>%
+  group_by(topic) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(x=reorder(factor(topic),-n), y=n)) + geom_col()+ 
+  xlab("Topic") + ylab("Number of Articles")+
+  ggtitle("Number of Articles Per Topic (Mutually Exclusive)") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+# allow articles to fall into multiple topics, based on a pre-defined threshold value (in this case above 0.15)
+article_classification_multi <- articles_gamma %>%
+  filter(gamma > .15)
+
+# Display num articles from overlapping classification
+article_classification_multi %>%
+  group_by(topic) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(x=reorder(factor(topic), -n), y=n)) + geom_col() + 
+  xlab("Topic") + ylab("Number of Articles") +
+  ggtitle("Number of Articles Per Topic (Overlapping)" ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+# merge gammas with original source data to get all metadata (article titles, authors, etc)
+article_classification <- merge(article_classification, transcript_df, by.x = "document", by.y = "fileName")
+
+# find article with highest gamma in each topic and store it into data frame
+# this article can be viewed as the most illustrative example of the topic
+illustrative_article <- article_classification %>%
+  group_by(topic) %>%
+  top_n(1, gamma)
+
+```
+
+6. Sentiment Analysis
+```{r}
+library(dplyr)
+library(sentimentr)
+library(lexicon)
+library(ggplot2)
+library(reshape2)
+
+# compute sentiment scores using jr lexicon
+jr_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_jockers_rinker,valence_shifters_dt = lexicon::hash_valence_shifters)
+
+#senticnet_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_senticnet,valence_shifters_dt = lexicon::hash_valence_shifters)
+
+# compute sentiment scores using nrc lexicon
+nrc_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_nrc,
+valence_shifters_dt = lexicon::hash_valence_shifters)
+
+# compute sentiment scores using sentiword lexicon
+sentiword_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_sentiword,valence_shifters_dt = lexicon::hash_valence_shifters)
+
+# compute sentiment scores using SOCAL-Google lexicon
+socal_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_socal_google, valence_shifters_dt = lexicon::hash_valence_shifters)
+
+# compute sentiment scores using McDonald-Loughran lexicon, McDonald-Loughran lexicon that is specific to financial texts
+loughran_mcdonald_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_loughran_mcdonald, valence_shifters_dt = lexicon::hash_valence_shifters)
+
+# combine sentiment scores into a single data frame
+all_sentiment <- jr_sentiment 
+colnames(all_sentiment)[12] <- "JR"
+all_sentiment <- left_join(all_sentiment, nrc_sentiment)
+colnames(all_sentiment)[13] <- "NRC"
+all_sentiment <- left_join(all_sentiment, sentiword_sentiment)
+colnames(all_sentiment)[14] <- "sentiword"
+all_sentiment <- left_join(all_sentiment, socal_sentiment)
+colnames(all_sentiment)[15] <- "socal"
+all_sentiment <- left_join(all_sentiment, loughran_mcdonald_sentiment)
+colnames(all_sentiment)[16] <- "mcdonald_loughran"
+
+# To plot all sentiments on one line chart, we can "melt" the dataframe so it is easier for ggplot to handle the plotting of different lines.  This way, we don't need to type out separate "geom_line" commands for each column of our "all_sentiment" df
+melted_sentiment <- melt(all_sentiment, id.vars = c("fileName", "transDate", "speaker", "text", "pos", "speaker_name", "speaker_company", "speaker_position", "element_id","sentence_id", "word_count"))
+#melt a wide to tall chart
+# Plot the sentiment scores from each lexicon over time
+# for simplicity, average together the sentiment scores if multiple articles appear on the same day
+melted_sentiment %>%
+  group_by(transDate, variable) %>%
+  summarize(value = average_downweighted_zero(value)) %>%
+  ggplot(aes(x = transDate, y = value, color = variable))+
+  geom_line(show.legend = TRUE) + ggtitle("Sentiment Comparison by Lexicon")
+```
+
+7. Flag documents that are above or below one standard deviation from the mean sentiment score. Further, join with dominant speaker document to determine who is speaking in the most and for how much in these documents
+```{r}
+loughran_mcdonald_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_loughran_mcdonald, valence_shifters_dt = lexicon::hash_valence_shifters)
+
+#Determine average sentiment by document
+avg_sent_doc <- loughran_mcdonald_sentiment %>% 
+ group_by(fileName) %>%
+  summarise(avg_sent = mean(sentiment))
+#Set upper and lower bounds for flagging 
+lowerbound <- (mean(avg_sent_doc$avg_sent) - sd(avg_sent_doc$avg_sent))
+upperbound <- (mean(avg_sent_doc$avg_sent) + sd(avg_sent_doc$avg_sent))
+#Find documents that fall below the lower bound for average sentiment score
+Neg_flags <- avg_sent_doc %>% 
+ filter(avg_sent < lowerbound)
+#Join with dominant speakers to determine who is speaking the most for these documents
+Neg_flagged_speakers <- Neg_flags %>% 
+  left_join(dominant_speaker)
+#Join with focal org behavior to determine companies involvement in negative docs
+Neg_focal_behavior <- Neg_flags %>% 
+  left_join(focal_org_behavior)
+#Find documents that fall above the upper bound for average sentiment score
+Pos_flags <- avg_sent_doc %>% 
+ filter(avg_sent > upperbound)
+#Join with dominant speakers to determine who is speaking the most for these document
+Pos_flagged_speakers <- Pos_flags %>% 
+  left_join(dominant_speaker)
+#Join with focal org behavior to determine companies involvement in negative docs
+Pos_focal_behavior <- Pos_flags %>%
+  left_join(focal_org_behavior)
+```
+8. sentiment plots
+```{r}
+library(dplyr)
+library(sentimentr)
+library(lexicon)
+library(ggplot2)
+library(reshape2)
+library(ggplot2)
+library(reshape2)
+
+# compute sentiment scores using McDonald-Loughran lexicon, McDonald-Loughran lexicon that is specific to financial texts
+loughran_mcdonald_sentiment <- sentiment(get_sentences(transcript_df), polarity_dt = hash_sentiment_loughran_mcdonald, valence_shifters_dt = lexicon::hash_valence_shifters)
+
+#limit time frame to 2016 on
+
+loughran_mcdonald_sentiment <- loughran_mcdonald_sentiment %>% 
+  filter("transDate" > "2016-01-01")
+
+# Plot the loughran mcdonlad sentiment scores by speaker position Top 10
+ loughran_mcdonald_sentiment %>% 
+      group_by(speaker_position) %>%
+      filter(nchar(speaker_position) < 20) %>% 
+     summarize( avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+     ggplot(aes(x = reorder(speaker_position, -avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Top 10 Sentiment By Position") +
+     xlab("Position") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores by speaker position bottom 10
+ loughran_mcdonald_sentiment %>% 
+      group_by(speaker_position) %>% 
+     filter(!is.na(speaker_position)) %>% 
+     filter((speaker_position != "")) %>% 
+     filter(nchar(speaker_position) < 20) %>% 
+     summarize( avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_position, avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Bottom 10 Sentiment By Position") +
+     xlab("Position") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ # Plot the loughran mcdonlad sentiment scores by speaker company Top 10
+ loughran_mcdonald_sentiment %>% 
+     filter(!is.na(speaker_company)) %>% 
+      filter(nchar(speaker_company) < 30) %>% 
+      group_by(speaker_company) %>% 
+     summarize( avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+     ggplot(aes(x = reorder(speaker_company, -avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Top 10 Sentiment By Company") +
+     xlab("Company") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores by speaker company bottom 10
+ loughran_mcdonald_sentiment %>% 
+      filter(!is.na(speaker_company)) %>% 
+    filter(nchar(speaker_company) < 30) %>%
+      group_by(speaker_company) %>% 
+     summarize( avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_company, avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Bottom 10 Sentiment By Company") +
+     xlab("Company") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ 
+ 
+# Plot the loughran mcdonlad sentiment scores by speaker name Top 10
+loughran_mcdonald_sentiment %>% 
+      group_by(speaker_name) %>% 
+      filter(nchar(speaker_name) < 20) %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+     ggplot(aes(x = reorder(speaker_name, -avg_sent), y = avg_sent))+
+     geom_col()  + 
+     labs(title = "Top 10 Sentiment By Speaker") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores by speaker name bottom 10
+ loughran_mcdonald_sentiment %>% 
+      group_by(speaker_name) %>% 
+      filter(nchar(speaker_name) < 20) %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_name, avg_sent), y = avg_sent))+
+     geom_col()  + 
+     labs(title = "Bottom 10 Sentiment By Speaker") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+9. sentiment plots by topic and speaker 
+```{r}
+library(dplyr)
+library(RColorBrewer)
+library(ggplot2)
+
+loughran_mcdonald_sentiment_topic <- merge(article_classification, loughran_mcdonald_sentiment, by.x = "document", by.y = "fileName")
+
+#Topic List: "Customer and Dealers", "engines", "market growth", "Outlook", "Constuction, oil, & Gas", "mining"
+
+
+#----------------------------------------Customer and Dealers"-----------------------------------------------#
+# Plot the loughran mcdonlad sentiment scores for topic Customer and Dealersby speaker name Top 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "Customer and Dealers") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+      ggplot(aes(x = reorder(speaker_name.x, -avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Customer and Dealers") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores for topic Customer and Dealers by speaker name bottom 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "Customer and Dealers") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_name.x, avg_sent), y = avg_sent))+
+     geom_col() +
+     labs(title = "Customer and Dealers") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#----------------------------------------"engines"-------------------------------------------------------#
+# Plot the loughran mcdonlad sentiment scores for topic engines by speaker name top 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "engines") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+      ggplot(aes(x = reorder(speaker_name.x, -avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "engines") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores for topic engines by speaker name bottom 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "engines") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_name.x, avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "engines") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#----------------------------------------"market growth"----------------------------------------------------#
+# Plot the loughran mcdonlad sentiment scores for topic market growth by speaker name top 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "market growth") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+      ggplot(aes(x = reorder(speaker_name.x, -avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "market growth") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores for topic market growth by speaker name bottom 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "market growth") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_name.x, avg_sent), y = avg_sent))+
+     geom_col()  + 
+     labs(title = "market growth") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#----------------------------------------"Outlook"-----------------------------------------------#
+# Plot the loughran mcdonlad sentiment scores for topc Outlook by speaker name Top 100
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "Outlook") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+      ggplot(aes(x = reorder(speaker_name.x, -avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Outlook") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores for topc Outlook by speaker name bottom 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "Outlook") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_name.x, avg_sent), y = avg_sent))+
+     geom_col() + 
+     labs(title = "Outlook") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#----------------------------------------"Constuction, oil, & Gas"-------------------------------------------#
+# Plot the loughran mcdonlad sentiment scores for topc Constuction, oil, & Gas by speaker name Top 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "Constuction, oil, & Gas") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+      ggplot(aes(x = reorder(speaker_name.x, -avg_sent), y = avg_sent))+
+     geom_col() +
+      labs(title = "Constuction, oil, & Gas") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores for topc Constuction, oil, & Gas by speaker name bottom 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "Constuction, oil, & Gas") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(-10) %>% 
+     ggplot(aes(x = reorder(speaker_name.x, avg_sent), y = avg_sent))+
+     geom_col() + 
+      labs(title = "Constuction, oil, & Gas") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+#----------------------------------------"mining"----------------------------------------------------#
+# Plot the loughran mcdonlad sentiment scores for topc mining by speaker name Top 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "mining") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+      ggplot(aes(x = reorder(speaker_name.x, -avg_sent), y = avg_sent))+
+     geom_col() + 
+      labs(title = "Mining") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+# Plot the loughran mcdonlad sentiment scores for for topc mining by speaker name bottom 10
+loughran_mcdonald_sentiment_topic %>% 
+      group_by(speaker_name.x) %>% 
+      filter(nchar(speaker_name.x) < 20) %>% 
+      filter(topic == "mining") %>% 
+     summarize(avg_sent = mean(sentiment)) %>% 
+     arrange(desc(avg_sent)) %>%
+     top_n(10) %>% 
+     ggplot(aes(x = reorder(speaker_name.x, avg_sent), y = avg_sent))+
+     geom_col()  + 
+     labs(title = "Mining") +
+     xlab("Speaker") +
+     ylab("Average Sentiment") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+
+
+
